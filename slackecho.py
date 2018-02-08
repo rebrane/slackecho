@@ -3,6 +3,7 @@ import twitter
 import json
 import urllib2
 import re
+import time
 
 link_re = re.compile(r"https://t.co(/[A-Za-z0-9]+)")
 username_re = re.compile(r"\B@([\S]+)")
@@ -22,18 +23,18 @@ def urlparse(tweet):
 
 def make_attachment(tweet):
     at = {
-      "fallback":"https://twitter.com/%s/status/%d" % (tweet.user.screen_name, tweet.id),
-      "pretext": at["fallback"],
+      "fallback" : "https://twitter.com/%s/status/%d" % (tweet.user.screen_name, tweet.id),
       "author_name": tweet.user.name,
       "author_subname": "@"+tweet.user.screen_name,
-      "author_link": at["fallback"],
       "author_icon": tweet.user.profile_image_url,
       "footer": "Twitter",
       "footer_icon": "https://slack.global.ssl.fastly.net/6e067/img/services/twitter_pixel_snapped_32.png",
       "ts": tweet.created_at_in_seconds,
-      "footer_link": at["fallback"],
-      "mrkdwn_in"=[]
+      "mrkdwn_in": []
     }
+    at["pretext"] = at["fallback"]
+    at["footer_link"] = at["fallback"]
+    at["author_link"] = at["fallback"]
     try:
         at["text"] = urlparse(tweet.full_text.encode('utf-8'))
     except:
@@ -56,7 +57,7 @@ def do_loop(target):
     else:
         if target.fail >= 2:
             pl = {"text":"_%s has reactivated_" % target.username, "channel":target.channel}
-            urllib2.urlopen(urllib2.Request(target.hook, json.dumps(pl))
+            urllib2.urlopen(urllib2.Request(target.hook, json.dumps(pl)))
         target.fail = 0
 
     for tweet in tl:
@@ -71,12 +72,12 @@ def do_loop(target):
         # if reply, include the tweet being replied to
         if (tweet.in_reply_to_status_id and not tweet.in_reply_to_status_id in target.sent):     
             target.sent[tweet.in_reply_to_status_id]=True
-            pl["attachments"].twapi["color"]="#0084b4"
+            pl["attachments"][0]["color"]="#0084b4"
             try:
                 st = target.twapi.GetStatus(tweet.in_reply_to_status_id)
                 p2 = {"attachments": [make_attachment(st)],
                       "channel": target.channel}
-                p2["attachments"].twapi["color"]="#0084b4"
+                p2["attachments"][0]["color"]="#0084b4"
                 urllib2.urlopen(urllib2.Request(target.hook, json.dumps(p2)))
             except:
                 pass
