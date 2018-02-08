@@ -1,122 +1,111 @@
-last_id=0
 import sys
 import twitter
 import json
-import urllib
 import urllib2
-import time
 import re
-import httplib
 
+link_re = re.compile(r"https://t.co(/[A-Za-z0-9]+)")
+username_re = re.compile(r"\B@([\S]+)")
+hashtag_re = re.compile(r"[\B\s]#([\S]+)")
 def urlparse(tweet):
-    p=re.compile(r"https://t.co(/[A-Za-z0-9]+)")
-    m=p.search(tweet)
+    m=link_re.search(tweet)
     if m:
-        c=httplib.HTTPSConnection("t.co")
-        c.request("HEAD",m.group(1))
-        tweet = p.sub(c.getresponse().getheader('location'),tweet)
-    p=re.compile(r"\B@([\S]+)")
-    if p.search(tweet):
-        tweet=p.sub(r"<https://twitter.com/\1|@\1>",tweet)
-    p=re.compile(r"[\B\s]#([\S]+)")
-    if p.search(tweet):
-        tweet=p.sub(r"<https://twitter.com/hashtag/\1|#\1>",tweet)
+        c = urllib2.Request("https://t.co/%s" % m.group(1))
+        c.get_method = lambda : 'HEAD'
+        r = urllib2.urlopen(c)
+        tweet = p.sub(r.info().getheader('location'),tweet)
+    if username_re.search(tweet):
+        tweet = username_re.sub(r"<https://twitter.com/\1|@\1>",tweet)
+    if hashtag_re.search(tweet):
+        tweet = hashtag_re.sub(r"<https://twitter.com/hashtag/\1|#\1>",tweet)
     return tweet
 
 def make_attachment(tweet):
-    at = {}
-    at["fallback"]="https://twitter.com/%s/status/%d" % (tweet.user.screen_name, tweet.id)
-    at["pretext"]=at["fallback"]
-    at["author_name"] = tweet.user.name
-    at["author_subname"] = "@"+tweet.user.screen_name
-    at["author_link"] = at["fallback"]
-    at["author_icon"] = tweet.user.profile_image_url
+    at = {
+      "fallback":"https://twitter.com/%s/status/%d" % (tweet.user.screen_name, tweet.id),
+      "pretext": at["fallback"],
+      "author_name": tweet.user.name,
+      "author_subname": "@"+tweet.user.screen_name,
+      "author_link": at["fallback"],
+      "author_icon": tweet.user.profile_image_url,
+      "footer": "Twitter",
+      "footer_icon": "https://slack.global.ssl.fastly.net/6e067/img/services/twitter_pixel_snapped_32.png",
+      "ts": tweet.created_at_in_seconds,
+      "footer_link": at["fallback"],
+      "mrkdwn_in"=[]
+    }
     try:
         at["text"] = urlparse(tweet.full_text.encode('utf-8'))
     except:
-        print "oops!"
         at["text"] = tweet.full_text.encode('utf-8')
-    tt=time.localtime(tweet.created_at_in_seconds)
-    now=time.localtime()
-    if tt[2]==now[2]:
-        timestr="Today at "+time.strftime("%-1I:%M %P",tt)
-    else:
-        timestr=time.strftime("%b %-1d %-1I:%M %P",tt)
-    #at["fields"]=[{"value":"<%s|%s>" % (at["fallback"],timestr)},]
-    #at["fields"]=[{"value":"<%s|Twitter> <!date^%d^{date_short_pretty} at {time}|%s>" % (at["pretext"],tweet.created_at_in_seconds, timestr)}]
-    at["footer"]="Twitter"
-    at["footer_icon"]="https://slack.global.ssl.fastly.net/6e067/img/services/twitter_pixel_snapped_32.png"
-    at["ts"] = tweet.created_at_in_seconds
-    at["footer_link"]=at["fallback"]
-    at["mrkdwn_in"]=[]
     if tweet.media:
         at["image_url"]=tweet.media.pop().media_url_https
     return at
 
 def do_loop(target):
     try:
-        tl = target[0].GetUserTimeline(screen_name=target[1], include_rts=False, since_id=target[2])
+        tl = target.twapi.GetUserTimeline(screen_name=target.username, include_rts=False, since_id=target.last_id)
         tl.sort(cmp=lambda x,y: cmp(x.id, y.id))
     except twitter.error.TwitterError, e:
-        print target[1],sys.exc_info()
-        target[4] = target[4]+1
-        if target[4] == 2:
-            pl = {"text": "_%s has deactivated_" % target[1], "channel":target[6]}
-            req = urllib2.Request(target[3], json.dumps(pl))
-            resp = urllib2.urlopen(req)
+        print target.username,sys.exc_info()
+        target.fail = target.fail+1
+        if target.fail == 2:
+            pl = {"text": "_%s has deactivated_" % target.username, "channel":target.channel}
+            urllib2.urlopen(urllib2.Request(target.hook, json.dumps(pl)))
         tl = []
     else:
-        if target[4] >= 2:
-            pl = {"text":"_%s has reactivated_" % target[1], "channel":target[6]}
-            req = urllib2.Request(target[3], json.dumps(pl))
-            resp = urllib2.urlopen(req)
-        target[4] = 0
+        if target.fail >= 2:
+            pl = {"text":"_%s has reactivated_" % target.username, "channel":target.channel}
+            urllib2.urlopen(urllib2.Request(target.hook, json.dumps(pl))
+        target.fail = 0
+
     for tweet in tl:
-        if tweet.id in target[5]:
+        if tweet.id in target.sent:
             continue
-        target[5][tweet.id]=True
-        pl = {"attachments": [make_attachment(tweet),]}
-        if (tweet.in_reply_to_status_id and not tweet.in_reply_to_status_id in target[5]):     
-            target[5][tweet.in_reply_to_status_id]=True
-            pl["attachments"][0]["color"]="#0084b4"
+        
+        target.sent[tweet.id]=True
+
+        pl = {"attachments": [make_attachment(tweet),],
+              "channel": target.channel}
+
+        # if reply, include the tweet being replied to
+        if (tweet.in_reply_to_status_id and not tweet.in_reply_to_status_id in target.sent):     
+            target.sent[tweet.in_reply_to_status_id]=True
+            pl["attachments"].twapi["color"]="#0084b4"
             try:
-                st = target[0].GetStatus(tweet.in_reply_to_status_id)
-                p2 = {"attachments": [make_attachment(st)]}
-                p2["attachments"][0]["color"]="#0084b4"
-                p2["channel"]=target[6]
-                req = urllib2.Request(target[3], json.dumps(p2))
-                resp = urllib2.urlopen(req)
+                st = target.twapi.GetStatus(tweet.in_reply_to_status_id)
+                p2 = {"attachments": [make_attachment(st)],
+                      "channel": target.channel}
+                p2["attachments"].twapi["color"]="#0084b4"
+                urllib2.urlopen(urllib2.Request(target.hook, json.dumps(p2)))
             except:
                 pass
 
-        pl["channel"]=target[6]
-        req = urllib2.Request(target[3], json.dumps(pl))
-        resp = urllib2.urlopen(req)
+        urllib2.urlopen(urllib2.Request(target.hook, json.dumps(pl)))
 
-        target[2] = tweet.id
+        target.last_id = tweet.id
         file("last_id.txt","wc").write(str(tweet.id))
+
+# Initialization and main loop
 
 try:
     last_id = int(file("last_id.txt").read())
 except:
-    pass
+    last_id=0
 
 from targets import *
-for x in targets:
-  if targets[2] == -1:
-    targets[2] = last_id
 
-def program(id=None):
-    if id:
-         for t in targets:
-            t[2]=id
+def main(id=None):
+    for t in targets:
+        if t.last_id == -1:
+            t.last_id = last_id
     while True:
         for t in targets:
             try:
-             do_loop(t)
+              do_loop(t)
             except:
-             print t[1],sys.exc_info()
+              print t.username,sys.exc_info()
             time.sleep(30 / len(targets))
         sys.stderr.write('.')
 
-program()
+main()
